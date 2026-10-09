@@ -40,4 +40,9 @@ for platform do
     exit 1
   fi
   echo "Verified $platform: ELF class=$class machine=$machine"
+  if [ "${VERIFY_IMAGE_PULL:-true}" != false ]; then
+    # Classic Docker storage maps an index digest to only one platform.
+    # Release this verification image before pulling the next platform.
+    docker image rm "$image" >/dev/null
+  fi
 done
