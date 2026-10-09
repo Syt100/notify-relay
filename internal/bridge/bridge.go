@@ -251,6 +251,8 @@ func (s *Service) worker(ctx context.Context) error {
 		}
 		nextSend = time.Now().Add(time.Second)
 		e = s.sender.Send(ctx, r.Message)
+		// Send may include a paced Markdown-to-text fallback request.
+		nextSend = time.Now().Add(time.Second)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -270,13 +272,27 @@ func (s *Service) worker(ctx context.Context) error {
 		}
 		delay := retryDelay(s.cfg.RetryBase, s.cfg.RetryMax, r.Attempts)
 		var delivery *provider.DeliveryError
-		if errors.As(e, &delivery) && delivery.After > 0 {
-			if delivery.After > delay {
-				delay = delivery.After
+		if errors.As(e, &delivery) {
+			if delivery.After > 0 {
+				if delivery.After > delay {
+					delay = delivery.After
+				}
+				cooldown := time.Now().Add(delivery.After)
+				if cooldown.After(nextSend) {
+					nextSend = cooldown
+				}
 			}
-			cooldown := time.Now().Add(delivery.After)
-			if cooldown.After(nextSend) {
-				nextSend = cooldown
+			if delivery.Rejected {
+				r.Rejections++
+			} else {
+				r.Rejections = 0
+			}
+			if delivery.Permanent || r.Rejections >= 5 {
+				if er := s.store.Fail(r, delivery.Reason, time.Now()); er != nil {
+					return er
+				}
+				s.log.Error("delivery isolated", "topic", r.Message.Topic, "id", r.Message.ID, "reason", delivery.Reason)
+				continue
 			}
 		}
 		if er := s.store.Retry(r, time.Now().Add(delay)); er != nil {
@@ -329,16 +345,17 @@ func (s *Service) Handler() http.Handler {
 			return
 		}
 		p, d, e := s.store.Counts()
+		failed, failedErr := s.store.FailedCount()
 		s.mu.Lock()
 		topics := make(map[string]activity, len(s.topics))
-		ready := e == nil && !s.storageError && s.providerError == ""
+		ready := e == nil && failedErr == nil && failed == 0 && !s.storageError && s.providerError == ""
 		for t, a := range s.topics {
 			topics[t] = a
 			if !a.Connected || a.ReplayTruncated || time.Since(a.Last) > s.cfg.Stale {
 				ready = false
 			}
 		}
-		live := e == nil && !s.storageError
+		live := e == nil && failedErr == nil && !s.storageError
 		providerError := s.providerError
 		s.mu.Unlock()
 		healthy := live
@@ -349,7 +366,7 @@ func (s *Service) Handler() http.Handler {
 		if !healthy {
 			w.WriteHeader(503)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"healthy": healthy, "ready": ready, "topics": topics, "pending": p, "processed_retained": d, "provider_error": providerError})
+		_ = json.NewEncoder(w).Encode(map[string]any{"healthy": healthy, "ready": ready, "topics": topics, "pending": p, "failed": failed, "processed_retained": d, "provider_error": providerError})
 	}
 	mux.HandleFunc("/healthz", handler)
 	mux.HandleFunc("/readyz", handler)

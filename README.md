@@ -96,11 +96,22 @@ logs UTC timestamps; notification content is not altered based on timezone.
 
 ## Message semantics
 
-The ntfy `title` (or topic) becomes the summary; `message` remains plain text.
+The ntfy `title` (or topic) becomes the summary. When a title is set, `[topic]`
+identifies the source; the body also includes the topic before the message.
+Messages marked `content_type: text/markdown` use WxPusher Markdown mode.
+Other messages remain plain text; Markdown-looking syntax is not auto-detected.
+Publish with `Markdown: yes` (or `markdown: true` in ntfy's JSON API).
+Metadata is escaped and placed before Markdown so an unclosed code block cannot
+hide it. If WxPusher rejects Markdown with business code 1001, one paced text
+fallback preserves the syntax and includes a plain-text fallback marker.
 Priority 1/2/3/4/5 maps to 💤/ℹ️/no prefix/⚠️/🚨. This preserves the meaning in
 the title; it does not change Android notification importance or bypass DND.
 The body includes tags, attachment links and `view` action links. `click`
-becomes WxPusher `url`. Attachments are not uploaded; HTTP/broadcast actions
+becomes WxPusher `url` when it fits the 1000-character limit; longer URLs are
+included in the body instead of being cut into invalid links. Long content is
+truncated with an ellipsis, accounting for UTF-8, escaping and text line breaks.
+Markdown's final HTML expansion depends on the provider, so local bounds cannot
+guarantee acceptance. Attachments are not uploaded; HTTP/broadcast/copy actions
 are not executed. Unsupported event fields are ignored.
 
 Messages below `FORWARD_MIN_PRIORITY` are processed without sending. The
@@ -110,11 +121,14 @@ health field `processed_retained` includes both accepted and filtered messages.
 
 - First startup subscribes to new messages. Subsequent connections replay from
   the persistent timestamp with a one-second overlap and deduplicate by ID.
-- Pending messages have no expiration or retry limit. Accepted/filtered IDs
+- Network, rate-limit and HTTP authentication failures retry without expiration.
+  HTTP 400/413/422 rejections are isolated immediately. Generic business code
+  1001 is retried, then isolated after five consecutive rejected delivery
+  attempts; it is not assumed to prove a permanent error. Accepted/filtered IDs
   are kept seven days by default. Replay older than this window can duplicate.
 - Recovery before local persistence depends on ntfy cache retention. With
   caching disabled, expired cache, a full queue or an extended outage, upstream
-  messages can be lost. Monitor `/readyz` and `pending`.
+  messages can be lost. Monitor `/readyz`, `pending` and `failed`.
 - If ntfy caps a replay (`X-Messages-Truncated: 1`), the bridge continues with
   the returned messages, logs the missing-history gap, and keeps `/readyz`
   unhealthy with `replay_truncated: true` until restart. Investigate the gap
@@ -122,13 +136,17 @@ health field `processed_retained` includes both accepted and filtered messages.
 - Delivery is at least once while messages remain available locally/upstream.
   WxPusher has no client idempotency key here; ambiguous network outcomes can
   duplicate. An accepted API request is not proof of phone notification display.
-- All HTTP and business failures retry. A wrong SPT or invalid message needs
-  operator correction; it will not be silently discarded. Other due messages
-  can continue while that message waits for its retry.
+- Isolated records retain their original content on disk and stop automatic
+  sends. They are deduplicated and count toward `MAX_PENDING` together with
+  pending records. Other messages can continue while capacity remains.
+  `/readyz` stays unhealthy until isolated records are requeued and resolved;
+  `/healthz` remains a liveness check. See [failed queue maintenance](docs/configuration.md#failed-queue-maintenance).
 - Run only one process per state file; do not put bbolt on network filesystems.
   The file may retain its disk high-water mark after record cleanup.
 - The state file uses bbolt, not SQLite. Do not point `STATE_DB` at another
-  application's database.
+  application's database. Schema 1 automatically upgrades to schema 2; back
+  up the state file while stopped before upgrading. Older binaries cannot open
+  schema 2; rolling back requires the pre-upgrade backup.
 
 ## Development and releases
 

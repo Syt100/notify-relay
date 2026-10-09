@@ -188,7 +188,7 @@ func TestEndToEndRetry(t *testing.T) {
 		if e := json.NewDecoder(r.Body).Decode(&p); e != nil {
 			t.Error(e)
 		}
-		if p.Summary != "🚨 test" || p.URL != "https://example.com" {
+		if p.Summary != "🚨 [notify] test" || p.URL != "https://example.com" {
 			t.Error("mapping")
 		}
 		if sends.Add(1) == 1 {

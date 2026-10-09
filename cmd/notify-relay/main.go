@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -36,6 +37,45 @@ func probe(endpoint string) error {
 	}
 	return nil
 }
+
+// Queue maintenance is offline: stop the bridge before opening its state file.
+func failed(args []string) error {
+	if len(args) != 1 && len(args) != 3 {
+		return fmt.Errorf("usage: failed list | failed retry TOPIC ID")
+	}
+	if args[0] != "list" && args[0] != "retry" {
+		return fmt.Errorf("usage: failed list | failed retry TOPIC ID")
+	}
+	if (args[0] == "list" && len(args) != 1) || (args[0] == "retry" && len(args) != 3) {
+		return fmt.Errorf("usage: failed list | failed retry TOPIC ID")
+	}
+	c, err := config.Load()
+	if err != nil {
+		return err
+	}
+	q, err := queue.Open(c.DB, c.MaxPending)
+	if err != nil {
+		return fmt.Errorf("cannot open state database; stop the bridge before maintenance")
+	}
+	defer q.Close()
+	if args[0] == "retry" {
+		if err = q.Requeue(args[1], args[2]); err != nil {
+			return err
+		}
+		fmt.Println("requeued")
+		return nil
+	}
+	items, err := q.ListFailures(100)
+	if err != nil {
+		return err
+	}
+	n, err := q.FailedCount()
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"failed": n, "items": items, "limit": 100})
+}
+
 func run() error {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -46,8 +86,10 @@ func run() error {
 			return probe("/healthz")
 		case "readycheck":
 			return probe("/readyz")
+		case "failed":
+			return failed(os.Args[2:])
 		case "help", "--help", "-h":
-			fmt.Println("notify-relay [version|healthcheck|readycheck]\nConfiguration: environment variables; see README.md.")
+			fmt.Println("notify-relay [version|healthcheck|readycheck|failed list|failed retry TOPIC ID]\nStop the bridge before failed queue maintenance.\nConfiguration: environment variables; see README.md.")
 			return nil
 		default:
 			return fmt.Errorf("unknown command")

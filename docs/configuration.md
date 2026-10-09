@@ -15,12 +15,12 @@ Configuration errors name the variable without printing its value.
 | `STATE_DB` | `/data/bridge.bolt` | bbolt state file; incompatible with SQLite |
 | `HEALTH_PORT` | `8080` | Bind health server on all container interfaces |
 | `NTFY_STALE_SECONDS` | `180` | Cancel a stream after no valid events for this duration |
-| `SEND_TIMEOUT` | `15` | Overall provider request timeout |
+| `SEND_TIMEOUT` | `15` | Timeout per provider HTTP request; text fallback has its own request timeout |
 | `RETRY_BASE_SECONDS` | `2` | Initial per-message retry delay |
 | `RETRY_MAX_SECONDS` | `300` | Maximum exponential delay including jitter |
 | `DELIVERED_RETENTION_DAYS` | `7` | Accepted/filtered ID retention in days |
 | `FORWARD_MIN_PRIORITY` | `1` | Send only priority at least this value, between 1 and 5 |
-| `MAX_PENDING` | `10000` | Maximum pending records before subscription backpressure |
+| `MAX_PENDING` | `10000` | Maximum combined pending and isolated records before subscription backpressure |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARN` or `ERROR` |
 | `GOMEMLIMIT` | `32MiB` in image | Go runtime soft memory target; excludes mapped database pages |
 | `GOGC` | `50` in image | Go GC tuning; lower values trade CPU for a smaller heap |
@@ -45,6 +45,38 @@ HTTPS uses standard CA verification. Do not expose the health port publicly.
 
 Connection/TLS timeouts are 10 seconds; ntfy response headers time out at 15 seconds. Queue
 polling uses a 250 ms wait. Structured log timestamps use UTC.
+
+## Failed queue maintenance
+
+HTTP 400/413/422 failures are isolated immediately. Business code 1001 means a
+generic rejection: five consecutive rejected delivery attempts trigger isolation.
+Markdown rejection first gets one text fallback within the same attempt. Other
+errors (including HTTP 401/403, business code 1002, 429 and network failures)
+keep retrying. Provider response text is never saved in diagnostic metadata.
+Isolation retains the original message in the private state database and keeps
+`/readyz` unhealthy. It does not discard or mark the message as delivered.
+
+Stop the bridge before maintenance; bbolt allows only one process per state
+file. The commands reuse the normal environment, network and mounted volume:
+
+```sh
+docker compose -f compose.ghcr.yaml stop wxpusher-bridge
+docker compose -f compose.ghcr.yaml run --rm --no-deps wxpusher-bridge failed list
+# Fix the credentials, endpoint or other rejection cause before retrying.
+docker compose -f compose.ghcr.yaml run --rm --no-deps wxpusher-bridge failed retry notify MESSAGE_ID
+docker compose -f compose.ghcr.yaml up -d wxpusher-bridge
+```
+
+`failed list` shows a total count and at most 100 records with topic, ID,
+attempts, time and sanitized reason. It does not print message bodies. Requeue
+listed records before listing the next batch. `failed retry TOPIC ID` preserves
+content and resets attempts/rejection counts. For a local build use `compose.yaml`
+instead. With a bind mount, keep the same UID/GID and directory permissions.
+There is no automatic deletion of isolated messages.
+
+Back up the state file while stopped before upgrading. Schema 1 upgrades to 2
+automatically; older binaries refuse schema 2. Restore the pre-upgrade backup
+when rolling back, accounting for notifications sent since that backup.
 
 `NTFY_DOCKER_NETWORK` is a Compose-only variable selecting the existing Docker
 network shared with ntfy (default `ntfy`); it is not a program setting.

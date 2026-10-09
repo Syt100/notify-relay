@@ -15,17 +15,31 @@ import (
 	"github.com/Syt100/notify-relay/internal/message"
 )
 
-var ErrFull = errors.New("pending queue is full")
-var buckets = []string{"meta", "cursor", "pending", "due", "seen", "retained"}
+var ErrFull = errors.New("pending and failed queue is full")
+var buckets = []string{"meta", "cursor", "pending", "due", "seen", "retained", "failed"}
 
 type Store struct {
 	db  *bolt.DB
 	max int
 }
 type Record struct {
-	Message  message.Message `json:"message"`
-	Attempts int             `json:"attempts"`
-	Due      int64           `json:"due"`
+	Message    message.Message `json:"message"`
+	Attempts   int             `json:"attempts"`
+	Due        int64           `json:"due"`
+	Rejections int             `json:"rejections,omitempty"`
+}
+
+// Failure contains diagnostic metadata, never message bodies or credentials.
+type Failure struct {
+	Topic    string    `json:"topic"`
+	ID       string    `json:"id"`
+	Attempts int       `json:"attempts"`
+	Reason   string    `json:"reason"`
+	FailedAt time.Time `json:"failed_at"`
+}
+type failedRecord struct {
+	Record  Record  `json:"record"`
+	Failure Failure `json:"failure"`
 }
 
 func key(m message.Message) []byte              { return []byte(m.Topic + "\x00" + m.ID) }
@@ -74,17 +88,18 @@ func Open(path string, max int) (*Store, error) {
 		}
 		meta := bucket(tx, "meta")
 		v := meta.Get([]byte("version"))
-		if v != nil && string(v) != "1" {
+		if v != nil && string(v) != "1" && string(v) != "2" {
 			return fmt.Errorf("unsupported queue schema")
 		}
-		for _, name := range []string{"pending", "seen"} {
+		for _, name := range []string{"pending", "seen", "failed"} {
 			if meta.Get([]byte(name+"_count")) == nil {
 				if e := meta.Put([]byte(name+"_count"), number(int64(bucket(tx, name).Stats().KeyN))); e != nil {
 					return e
 				}
 			}
 		}
-		return meta.Put([]byte("version"), []byte("1"))
+		// Old binaries must refuse state with isolated records on downgrade.
+		return meta.Put([]byte("version"), []byte("2"))
 	})
 	if e != nil {
 		_ = db.Close()
@@ -128,8 +143,8 @@ func (s *Store) Enqueue(m message.Message) (bool, error) {
 	e := s.db.Update(func(tx *bolt.Tx) error {
 		k := key(m)
 		pending := bucket(tx, "pending")
-		if pending.Get(k) == nil && bucket(tx, "seen").Get(k) == nil {
-			if count(tx, "pending") >= int64(s.max) {
+		if pending.Get(k) == nil && bucket(tx, "seen").Get(k) == nil && bucket(tx, "failed").Get(k) == nil {
+			if count(tx, "pending")+count(tx, "failed") >= int64(s.max) {
 				return ErrFull
 			}
 			raw, e := json.Marshal(Record{Message: m})
@@ -221,6 +236,95 @@ func (s *Store) Counts() (int, int, error) {
 		return nil
 	})
 	return p, d, e
+}
+
+func (s *Store) Fail(r *Record, reason string, now time.Time) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		k := key(r.Message)
+		if bucket(tx, "pending").Get(k) == nil {
+			return fmt.Errorf("pending record is missing")
+		}
+		updated := *r
+		updated.Attempts++
+		f := failedRecord{Record: updated, Failure: Failure{Topic: r.Message.Topic, ID: r.Message.ID, Attempts: updated.Attempts, Reason: reason, FailedAt: now.UTC()}}
+		raw, err := json.Marshal(f)
+		if err != nil {
+			return err
+		}
+		if err = bucket(tx, "failed").Put(k, raw); err != nil {
+			return err
+		}
+		if err = bucket(tx, "pending").Delete(k); err != nil {
+			return err
+		}
+		if err = bucket(tx, "due").Delete(index(r.Due, k)); err != nil {
+			return err
+		}
+		if err = changeCount(tx, "pending", -1); err != nil {
+			return err
+		}
+		return changeCount(tx, "failed", 1)
+	})
+}
+
+func (s *Store) FailedCount() (int, error) {
+	var n int
+	err := s.db.View(func(tx *bolt.Tx) error { n = int(count(tx, "failed")); return nil })
+	return n, err
+}
+
+// ListFailures reads at most limit individual records, keeping memory bounded.
+func (s *Store) ListFailures(limit int) ([]Failure, error) {
+	if limit < 1 || limit > 100 {
+		return nil, fmt.Errorf("failure list limit must be between 1 and 100")
+	}
+	list := []Failure{}
+	err := s.db.View(func(tx *bolt.Tx) error {
+		c := bucket(tx, "failed").Cursor()
+		for k, v := c.First(); k != nil && len(list) < limit; k, v = c.Next() {
+			var f failedRecord
+			if err := json.Unmarshal(v, &f); err != nil {
+				return err
+			}
+			list = append(list, f.Failure)
+		}
+		return nil
+	})
+	return list, err
+}
+
+func (s *Store) Requeue(topic, id string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		k := key(message.Message{Topic: topic, ID: id})
+		raw := bucket(tx, "failed").Get(k)
+		if raw == nil {
+			return fmt.Errorf("failed record not found")
+		}
+		var f failedRecord
+		if err := json.Unmarshal(raw, &f); err != nil {
+			return err
+		}
+		f.Record.Due = 0
+		f.Record.Attempts = 0
+		f.Record.Rejections = 0
+		raw, err := json.Marshal(f.Record)
+		if err != nil {
+			return err
+		}
+		if err = bucket(tx, "pending").Put(k, raw); err != nil {
+			return err
+		}
+		if err = bucket(tx, "due").Put(index(0, k), k); err != nil {
+			return err
+		}
+		if err = bucket(tx, "failed").Delete(k); err != nil {
+			return err
+		}
+		if err = changeCount(tx, "failed", -1); err != nil {
+			return err
+		}
+		return changeCount(tx, "pending", 1)
+	})
 }
 func (s *Store) Cleanup(cutoff time.Time) error {
 	// Small transactions keep cleanup bounded even after a long downtime.

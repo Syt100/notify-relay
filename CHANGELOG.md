@@ -6,6 +6,13 @@ This project uses Semantic Versioning. Entries describe user-visible changes.
 
 ### Fixed
 
+- Preserve ntfy Markdown metadata and send Markdown to WxPusher, with a paced
+  text fallback on rejection. Include topic source in summaries and bodies.
+- Account for text line-break expansion and UTF-16 character limits; move
+  oversized click URLs into the bounded body instead of sending invalid fields.
+- Isolate HTTP 400/413/422 and repeated business rejections without dropping
+  content. Add failed queue inspection/requeue commands and health counts.
+- Correct the Chinese README's outdated image availability statement.
 - Preserve BuildKit's target platform when cross-compiling container binaries.
   Registry publishing now checks each platform's actual ELF binary.
 
