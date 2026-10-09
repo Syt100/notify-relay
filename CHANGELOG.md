@@ -4,6 +4,11 @@ This project uses Semantic Versioning. Entries describe user-visible changes.
 
 ## Unreleased
 
+### Fixed
+
+- Preserve BuildKit's target platform when cross-compiling container binaries.
+  Registry publishing now checks each platform's actual ELF binary.
+
 ### Added
 
 - Automatic multi-platform GHCR publishing after successful main-branch CI,
