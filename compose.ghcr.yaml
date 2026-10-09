@@ -1,0 +1,36 @@
+# Set notification credentials and the existing ntfy network in .env.
+services:
+  wxpusher-bridge:
+    image: ${NOTIFY_RELAY_IMAGE:-ghcr.io/syt100/notify-relay:main}
+    container_name: notify-relay
+    environment:
+      NTFY_BASE_URL: http://ntfy
+      NTFY_TOPICS: ${NTFY_TOPICS:-notify}
+      NTFY_TOKEN: ${NTFY_WXBRIDGE_TOKEN:?Set NTFY_WXBRIDGE_TOKEN in .env}
+      WXPUSHER_SPT: ${WXPUSHER_SPT:?Set WXPUSHER_SPT in .env}
+      STATE_DB: /data/bridge.bolt
+      FORWARD_MIN_PRIORITY: ${FORWARD_MIN_PRIORITY:-1}
+      MAX_PENDING: 10000
+      LOG_LEVEL: INFO
+      GOMEMLIMIT: 32MiB
+      GOGC: "50"
+      GOMAXPROCS: "1"
+    volumes:
+      - bridge-data:/data
+    read_only: true
+    mem_limit: 64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "3"
+volumes:
+  bridge-data:
+networks:
+  default:
+    external: true
+    name: ${NTFY_DOCKER_NETWORK:-ntfy}

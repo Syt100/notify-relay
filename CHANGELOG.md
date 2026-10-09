@@ -6,6 +6,8 @@ This project uses Semantic Versioning. Entries describe user-visible changes.
 
 ### Added
 
+- Automatic multi-platform GHCR publishing after successful main-branch CI,
+  with main/SHA tags, build metadata and a prebuilt-image Compose example.
 - Initial Go bridge with transactional bbolt outbox and per-topic replay cursors.
 - Persistent retries, ID deduplication, queue capacity and priority filtering.
 - WxPusher SPT text mapping with tags, attachment/action links and click URLs.
