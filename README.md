@@ -57,6 +57,24 @@ The runtime image contains no shell or `wget`: use `/bridge healthcheck` and
 `/bridge readycheck`. A plain binary is also available through the tag-based
 release workflow once this project is published.
 
+## Prebuilt GHCR container
+
+To avoid compiling on your server, use the published image with
+`compose.ghcr.yaml`. Set up `.env` and the existing ntfy network as above, then:
+
+```sh
+docker compose -f compose.ghcr.yaml pull
+docker compose -f compose.ghcr.yaml up -d
+docker compose -f compose.ghcr.yaml exec wxpusher-bridge /bridge readycheck
+```
+
+The default image is `ghcr.io/syt100/notify-relay:main`, built automatically
+after all CI checks pass on `main`. It includes Linux amd64, arm64 and arm/v7.
+Set `NOTIFY_RELAY_IMAGE` in `.env` to `ghcr.io/syt100/notify-relay:sha-<full-commit-sha>`
+or an image digest for a pinned deployment. The GHCR package must be public for
+anonymous pulls; see [releasing](docs/releasing.md). Stable version tags and
+`latest` are published by the existing release workflow.
+
 ## Binary deployment
 
 Build on a development machine, then copy the binary to your server:

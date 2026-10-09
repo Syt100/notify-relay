@@ -23,6 +23,23 @@ cd notify-relay
 这是初版代码；[验证记录](docs/verification.md)列出实测数据和未验证的部分。
 `GOMEMLIMIT=32MiB` 是 Go 运行时软目标，不等于进程或容器总内存上限。
 
+## 使用 GHCR 预构建镜像
+
+小内存服务器可以直接拉取镜像，无需安装 Go 或本地编译。先按下文配置
+`.env` 和 ntfy 所在的 Docker 网络，然后执行：
+
+```sh
+docker compose -f compose.ghcr.yaml pull
+docker compose -f compose.ghcr.yaml up -d
+docker compose -f compose.ghcr.yaml exec wxpusher-bridge /bridge readycheck
+```
+
+默认镜像为 `ghcr.io/syt100/notify-relay:main`，每次 `main` 的全部 CI 检查
+通过后自动构建并发布，支持 amd64、arm64 和 arm/v7。需要固定版本时，
+在 `.env` 中将 `NOTIFY_RELAY_IMAGE` 设为 `:sha-<完整提交 SHA>` 标签或镜像
+digest。GHCR 软件包设为 Public 后才能匿名拉取，步骤见
+[发布指南](docs/releasing.md)。正式版本标签和 `latest` 由版本发布流程生成。
+
 ## 对接已有 ntfy
 
 将项目放在服务器上，执行：

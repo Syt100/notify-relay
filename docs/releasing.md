@@ -1,13 +1,42 @@
 # Releasing
 
-The project is prepared for GitHub, but no repository, registry namespace or
-public release is assumed to exist yet. Before the first release:
+## Continuous GHCR images
 
-1. Create/import the repository and choose its owner/name.
+`.github/workflows/ci.yml` publishes an image after successful secret scans,
+tests and the container smoke check on `main`. A manual CI run on `main` can
+also rebuild it. Pull requests do not log into GHCR or publish images.
+
+- Registry: `ghcr.io/syt100/notify-relay`.
+- Tags: `main` follows the latest passing main commit; `sha-<full-commit-sha>`
+  identifies the source commit. Images can be rebuilt, so use the manifest
+  digest from the job summary when you need an immutable deployment reference.
+- Platforms: `linux/amd64`, `linux/arm64`, `linux/arm/v7`.
+- Metadata: OCI source/revision labels, SBOM and provenance attestations.
+- Authentication: the job's automatic `GITHUB_TOKEN` with `packages: write`;
+  no personal access token or notification credentials are required.
+
+New GHCR packages default to private, even when the repository is public.
+After the first successful build, open
+[the package page](https://github.com/users/Syt100/packages/container/package/notify-relay),
+choose **Package settings**, then **Change visibility** → **Public** if you
+want anonymous pulls. If the package already existed outside this workflow,
+grant the repository write access under **Manage Actions access**.
+
+Deploy with `compose.ghcr.yaml`; configure `.env` and the existing Docker
+network as described in the README. Set `NOTIFY_RELAY_IMAGE` to a SHA tag,
+version or digest to pin it. The default `main` tag is a development build.
+The `latest` and semantic-version tags remain owned by the release workflow.
+
+## Versioned releases
+
+Before the first versioned release:
+
+1. Confirm the target commit and release version.
 2. Enable Actions and GHCR package publishing. Make the GHCR package public if
    anonymous image pulls are intended; repository visibility alone is not enough.
 3. Enable private vulnerability reporting and branch protection on `main`;
-   require CI checks and review. Enable Dependabot/security updates as available.
+   require the CI checks. Independent maintainers may keep required approvals
+   at zero. Enable Dependabot/security updates as available.
 4. Optional Docker Hub publishing: create `notify-relay` under your Docker
    Hub account and add `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` Actions secrets.
 5. Run `make check`, complete the container smoke check and verify one real ntfy
@@ -30,5 +59,4 @@ the binary artifacts and image might already exist. Do not delete or move an
 already published release tag. Correct it with a subsequent patch release.
 
 The local source package does not publish anything. Registry addresses in the
-workflow are derived from the eventual repository/account rather than a
-placeholder owner that users might accidentally copy.
+workflow are derived from the repository/account that runs it.
