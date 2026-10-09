@@ -1,0 +1,131 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - run: make check && go mod verify
+      - run: docker build -t bridge:release-test .
+  binaries:
+    runs-on: ubuntu-latest
+    needs: verify
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            label: amd64
+            arm: ''
+          - arch: arm64
+            label: arm64
+            arm: ''
+          - arch: arm
+            label: armv7
+            arm: '7'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Build archive
+        env:
+          VERSION: ${{ github.ref_name }}
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          GOARM: ${{ matrix.arm }}
+          CGO_ENABLED: '0'
+          LABEL: ${{ matrix.label }}
+        run: |
+          mkdir -p dist/package
+          go build -buildvcs=false -trimpath -ldflags="-s -w -X main.version=$VERSION" \
+            -o dist/package/notify-relay ./cmd/notify-relay
+          cp LICENSE THIRD_PARTY_NOTICES.md README.md README.zh-CN.md dist/package/
+          cp -r third_party dist/package/
+          cp -r docs dist/package/
+          tar -czf "dist/notify-relay-${VERSION}-linux-${LABEL}.tar.gz" -C dist/package .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.label }}
+          path: dist/*.tar.gz
+  images:
+    runs-on: ubuntu-latest
+    needs: verify
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Determine optional Docker Hub target
+        id: hub
+        env:
+          HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$HUB_USER" ] && [ -n "$HUB_TOKEN" ]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+            echo "image=$HUB_USER/notify-relay" >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            echo 'image=disabled/notify-relay' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: docker/login-action@v3
+        if: steps.hub.outputs.enabled == 'true'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+            name=${{ steps.hub.outputs.image }},enable=${{ steps.hub.outputs.enabled }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          flavor: |
+            latest=auto
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ github.ref_name }}
+          provenance: true
+          sbom: true
+  publish:
+    runs-on: ubuntu-latest
+    needs: [binaries, images]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+      - name: Create checksums and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          gh release create "$VERSION" *.tar.gz SHA256SUMS \
+            --verify-tag --generate-notes --title "$VERSION"

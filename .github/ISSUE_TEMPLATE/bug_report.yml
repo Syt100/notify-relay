@@ -1,0 +1,23 @@
+name: Bug report
+description: Report reproducible behavior without credentials or notification content.
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Bridge version and platform
+      placeholder: 'dev, linux/amd64, Docker'
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps, expected behavior and actual behavior
+      description: Include sanitized configuration and a minimal reproduction.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs and health response
+      description: Remove tokens, personal URLs and message bodies.
+      render: text
