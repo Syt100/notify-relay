@@ -14,12 +14,15 @@ It targets small Linux servers and runs as a single Go binary without CGO.
   messages after that first connection.
 - Pending payloads stay on disk. The worker fetches one due message at a time
   through an ordered index; it never loads the queue into memory.
-- Failed requests retry indefinitely with bounded exponential backoff and
-  jitter. All sends are globally paced to at most one request per second.
+- Transient requests retry with bounded exponential backoff and jitter.
+  HTTP 400/413/422 and five consecutive generic business rejections move to
+  a transactional isolated bucket. Requeue restores the original record and
+  resets attempts. Pending and isolated records share the capacity limit.
+  Markdown rejections get one paced text fallback. All requests remain paced
+  to at most one per second, including that fallback.
 - Queue capacity defaults to 10,000 pending records. A full queue stops
   subscription consumption without advancing the checkpoint. Recovery relies
   on ntfy still retaining those unconsumed messages.
-- Deduplication is local, not end-to-end exactly-once delivery. An accepted
 - If a server reports a capped replay, processing continues, an error is logged,
   and topic readiness records a history gap until the process restarts. The
   missing historical records cannot be recovered by this bridge automatically.
@@ -32,7 +35,7 @@ It targets small Linux servers and runs as a single Go binary without CGO.
 ## Operations
 
 `/healthz` checks process liveness; `/readyz` includes all subscriptions and the
-most recent provider outcome. Endpoints include queue counts but no secrets or
+most recent provider outcome and isolated failures. Endpoints include queue counts but no secrets or
 message bodies. One process owns one state file. Graceful termination cancels
 streams and in-flight sends before closing the database.
 

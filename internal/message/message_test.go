@@ -9,7 +9,7 @@ import (
 
 func TestMapping(t *testing.T) {
 	p := Payload(Message{Topic: "backup", Title: "备份失败", Message: "磁盘满", Priority: 5, Tags: []string{"backup", "error"}, Click: "https://example.com/status", Attachment: Attachment{Name: "log.txt", URL: "https://example.com/log"}, Actions: []Action{{Action: "view", Label: "详情", URL: "https://example.com/details"}}}, "SPT_test")
-	if p.Summary != "🚨 备份失败" || p.URL != "https://example.com/status" || p.ContentType != 1 || p.SPT != "SPT_test" {
+	if p.Summary != "🚨 [backup] 备份失败" || p.URL != "https://example.com/status" || p.ContentType != 1 || p.SPT != "SPT_test" {
 		t.Fatalf("bad mapping: %+v", p)
 	}
 	for _, part := range []string{"磁盘满", "backup, error", "log.txt", "https://example.com/details"} {

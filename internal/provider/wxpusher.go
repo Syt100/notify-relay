@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,8 +21,10 @@ type WxPusher struct {
 	client   *http.Client
 }
 type DeliveryError struct {
-	Reason string
-	After  time.Duration
+	Reason    string
+	After     time.Duration
+	Permanent bool
+	Rejected  bool
 }
 
 func (e *DeliveryError) Error() string { return e.Reason }
@@ -47,7 +50,33 @@ func retryAfter(v string) time.Duration {
 	return 0
 }
 func (p *WxPusher) Send(ctx context.Context, m message.Message) error {
-	raw, e := json.Marshal(message.Payload(m, p.spt))
+	payload := message.Payload(m, p.spt)
+	e := p.send(ctx, payload)
+	var delivery *DeliveryError
+	if payload.ContentType != 3 || !errors.As(e, &delivery) || !delivery.Rejected {
+		return e
+	}
+	// Code 1001 is a generic rejection, not proof of an oversized message.
+	// Try text only once; preserve and report any subsequent rejection.
+	delay := time.Second
+	if delivery.After > delay {
+		delay = delivery.After
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return e
+	case <-timer.C:
+	}
+	m.ContentType = ""
+	payload = message.Payload(m, p.spt)
+	payload.Content = message.BoundText("[Markdown 转为纯文本]\n\n" + payload.Content)
+	return p.send(ctx, payload)
+}
+
+func (p *WxPusher) send(ctx context.Context, payload message.Push) error {
+	raw, e := json.Marshal(payload)
 	if e != nil {
 		return &DeliveryError{Reason: "payload encoding failed"}
 	}
@@ -64,7 +93,8 @@ func (p *WxPusher) Send(ctx context.Context, m message.Message) error {
 	defer resp.Body.Close()
 	after := retryAfter(resp.Header.Get("Retry-After"))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &DeliveryError{Reason: fmt.Sprintf("provider HTTP %d", resp.StatusCode), After: after}
+		permanent := resp.StatusCode == 400 || resp.StatusCode == 413 || resp.StatusCode == 422
+		return &DeliveryError{Reason: fmt.Sprintf("provider HTTP %d", resp.StatusCode), After: after, Permanent: permanent}
 	}
 	raw, e = io.ReadAll(io.LimitReader(resp.Body, 65537))
 	if e != nil || len(raw) > 65536 {
@@ -78,7 +108,7 @@ func (p *WxPusher) Send(ctx context.Context, m message.Message) error {
 		return &DeliveryError{Reason: "provider response is not JSON"}
 	}
 	if result.Code != 1000 || (result.Success != nil && !*result.Success) {
-		return &DeliveryError{Reason: fmt.Sprintf("provider business code %d", result.Code), After: after}
+		return &DeliveryError{Reason: fmt.Sprintf("provider business code %d", result.Code), After: after, Rejected: result.Code == 1001}
 	}
 	return nil
 }
